@@ -3,77 +3,84 @@ import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 import os
 import shutil
-from chromadb import PersistentClient
-from chromadb.config import Settings
-from openai import OpenAI
-import tiktoken
-import chardet
+from langchain_community.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter, CharacterTextSplitter
+from langchain.vectorstores import Chroma
+from langchain.embeddings.openai import OpenAIEmbeddings
+import PyPDF2
+from dotenv import load_dotenv
+import openai
+
 
 def read_file_content(file_path):
-    with open(file_path, 'rb') as file:
-        raw_data = file.read()
-    detected = chardet.detect(raw_data)
-    encoding = detected['encoding']
-
     try:
-        with open(file_path, 'r', encoding=encoding) as file:
-            return file.read()
-    except UnicodeDecodeError:
-        return f"Unable to read file content. The file may be binary or use an unsupported encoding: {encoding}"
+        with open(file_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
 
-def get_embedding(text, model="text-embedding-ada-002"):
-    client = OpenAI()
-    text = text.replace("\n", " ")
-    return client.embeddings.create(input=[text], model=model).data[0].embedding
+            text = "" 
+            
+            for page in pdf_reader.pages:
+                text += page.extract_text()
+            
+            return "OK",text
+    
+    except (Exception) as e:
+        return "ERROR",e
+    
+def split_text(text,parm_chunk_size,parm_overlap_size):
+    #loader = TextLoader(text,encoding='utf8')
+    #pages = loader.load()
+
+
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=parm_chunk_size,
+        chunk_overlap=parm_overlap_size, 
+        separators=["\n\n", "\n", " "]
+    )
+
+    docs = text_splitter.split_text(text=text)
+
+    return docs 
+
 
 def upload_and_embed_file(file):
-    os.makedirs("project/docs", exist_ok=True)
+    os.makedirs("docs", exist_ok=True)
     db_path = os.path.join(os.getcwd(), "db")
     os.makedirs(db_path, exist_ok=True)
 
-    destination = os.path.join("project/docs", os.path.basename(file.name))
+    destination = os.path.join("docs", os.path.basename(file.name))
     shutil.copy(file.name, destination)
 
     content = read_file_content(destination)
 
-    chroma_client = PersistentClient(path=db_path, settings=Settings(allow_reset=True))
-
-    collection_name = os.path.splitext(os.path.basename(file.name))[0]
+    if content[0] == "OK":
+        splitted_text = split_text(content[1],1500,150)
+    else:   
+        return "ERROR"
     
-    # Get or create the collection
     try:
-        collection = chroma_client.get_collection(name=collection_name)
-        # If collection exists, we'll overwrite it
-        collection.delete(where={'collection_name': collection_name})
-    except ValueError:
-        # Collection doesn't exist, create a new one
-        collection = chroma_client.create_collection(name=collection_name)
+        persist_directory = 'db/'
+        collection_name = "default"
 
-    encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-    max_tokens = 8000
-    chunks = []
-    current_chunk = ""
-    current_tokens = 0
+        embedding = OpenAIEmbeddings()
 
-    for line in content.split('\n'):
-        line_tokens = len(encoding.encode(line))
-        if current_tokens + line_tokens > max_tokens:
-            chunks.append(current_chunk)
-            current_chunk = line
-            current_tokens = line_tokens
-        else:
-            current_chunk += line + '\n'
-            current_tokens += line_tokens
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    for i, chunk in enumerate(chunks):
-        chunk_embedding = get_embedding(chunk)
-        collection.add(
-            documents=[chunk],
-            embeddings=[chunk_embedding],
-            ids=[f"{collection_name}_{i}"]
+        vectordb = Chroma.from_texts(
+            texts=splitted_text,
+            embedding=embedding,
+            persist_directory=persist_directory,
+            collection_name=collection_name
         )
 
-    return collection_name
+    
+
+        vectordb.persist()
+
+        return collection_name
+    
+    except (Exception) as e:
+        print(e)
+
+if __name__ == "__main__":
+    with open('db/Medmal.pdf','r') as file:
+        upload_and_embed_file(file)
