@@ -61,7 +61,7 @@ def upload_and_embed_file(file):
     
     try:
         persist_directory = 'db/'
-        collection_name = "default"
+        collection_name = os.path.splitext(os.path.basename(file.name))[0]
 
         embedding = OpenAIEmbeddings()
 
